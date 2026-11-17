@@ -42,6 +42,15 @@
   }
   .marquee p{margin:5px 0 0;font-size:13px;color:#e0c58a;letter-spacing:1px;text-shadow:0 1px 2px rgba(0,0,0,.8)}
 
+  .infobar{
+    display:flex;flex-direction:column;align-items:center;gap:2px;
+    margin:0 auto 12px;padding:8px 18px;width:fit-content;max-width:100%;
+    background:rgba(18,9,7,.62);border:1px solid var(--line);border-radius:14px;
+    box-shadow:0 4px 14px rgba(0,0,0,.3);
+  }
+  .infobar .info-line{font-size:13px;color:#ecdab2;letter-spacing:.4px;line-height:1.55;text-align:center}
+  .infobar .info-line #clockPart{color:var(--gold);font-weight:600}
+
   .machine{
     position:relative;
     background:linear-gradient(160deg,#7d1a1a,#4a0d0d 70%);
@@ -222,6 +231,11 @@
     <p>· 摇一摇，命运之轮替你决定 ·</p>
   </div>
 
+  <div class="infobar">
+    <div class="info-line" id="dateLine">--</div>
+    <div class="info-line" id="timeLine">--</div>
+  </div>
+
   <div class="machine" id="machine">
     <div class="bulbs b-top" id="bulbsTop"></div>
     <div class="bulbs b-bottom" id="bulbsBottom"></div>
@@ -361,7 +375,116 @@
     }catch(e){}
   }
   function tick(){ beep(680, 0.04, "square", 0.03); }
-  function winSound(){ beep(523,0.12,"triangle",0.07); setTimeout(function(){beep(659,0.12,"triangle",0.07);},110); setTimeout(function(){beep(784,0.22,"triangle",0.08);},220); }
+  function winSound(){
+    if(!data.settings.sound) return;
+    var arp = [523.25, 659.25, 783.99, 1046.5];
+    arp.forEach(function(f, i){
+      setTimeout(function(){ beep(f, 0.09, "square", 0.06); }, i * 75);
+    });
+    setTimeout(function(){
+      beep(1046.5, 0.55, "triangle", 0.08);
+      beep(1318.5, 0.55, "triangle", 0.055);
+      beep(1568.0, 0.55, "triangle", 0.045);
+    }, arp.length * 75);
+  }
+
+  var CN_DIGIT = ["零","一","二","三","四","五","六","七","八","九"];
+  function cnLunarDay(n){
+    if(n === 10) return "初十";
+    if(n < 10) return "初" + CN_DIGIT[n];
+    if(n < 20) return "十" + (n % 10 ? CN_DIGIT[n % 10] : "");
+    if(n === 20) return "二十";
+    if(n < 30) return "廿" + CN_DIGIT[n % 10];
+    return n === 30 ? "三十" : String(n);
+  }
+  function lunarText(d){
+    try{
+      var parts = new Intl.DateTimeFormat("zh-CN-u-ca-chinese", {month:"long", day:"numeric"}).formatToParts(d);
+      var m = "", day = "";
+      parts.forEach(function(p){
+        if(p.type === "month") m = p.value;
+        if(p.type === "day") day = p.value;
+      });
+      var n = parseInt(day, 10);
+      if(m && n) return m + cnLunarDay(n);
+    }catch(e){}
+    return "";
+  }
+
+  var WEATHER_MAP = {
+    113:"晴",116:"多云",119:"多云",122:"阴",143:"雾",248:"雾",260:"冻雾",
+    176:"局部阵雨",263:"毛毛雨",266:"毛毛雨",281:"冻毛毛雨",284:"强冻毛毛雨",
+    293:"小雨",296:"小雨",299:"中雨",302:"中雨",305:"大雨",308:"大雨",
+    311:"小冻雨",314:"冻雨",317:"小冻雨",350:"冰粒",
+    353:"小阵雨",356:"阵雨",359:"强阵雨",
+    179:"局部阵雪",182:"雨夹雪",185:"冻雨",320:"雨夹雪",
+    323:"小雪",326:"小雪",329:"中雪",332:"中雪",335:"大雪",338:"大雪",
+    227:"暴雪",230:"暴风雪",
+    362:"阵雨夹雪",365:"阵雨夹雪",368:"小阵雪",371:"阵雪",374:"小冰粒",377:"冰粒",
+    200:"雷暴",386:"雷阵雨",389:"雷阵雨",392:"雷雪",395:"雷雪"
+  };
+
+  var weatherText = "";
+  function fetchJSON(url, ms){
+    return new Promise(function(resolve, reject){
+      var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+      var timer = setTimeout(function(){ if(ctrl){ try{ ctrl.abort(); }catch(e){} } reject(new Error("timeout")); }, ms || 10000);
+      if(typeof fetch !== "function"){ clearTimeout(timer); reject(new Error("no fetch")); return; }
+      fetch(url, ctrl ? {signal: ctrl.signal} : {}).then(function(r){ return r.json(); }).then(function(j){ clearTimeout(timer); resolve(j); }).catch(function(e){ clearTimeout(timer); reject(e); });
+    });
+  }
+  function getPosition(){
+    return new Promise(function(resolve, reject){
+      var byIP = function(){
+        fetchJSON("https://ipwho.is/", 8000).then(function(j){
+          if(j && j.success && j.latitude) resolve({lat:j.latitude, lon:j.longitude, city:j.city || ""});
+          else reject(new Error("ip geo failed"));
+        }).catch(reject);
+      };
+      try{
+        if(typeof navigator === "undefined" || !navigator.geolocation){ byIP(); return; }
+        navigator.geolocation.getCurrentPosition(function(p){
+          resolve({lat:p.coords.latitude, lon:p.coords.longitude, city:""});
+        }, byIP, {timeout:6000, maximumAge:600000});
+      }catch(e){ byIP(); }
+    });
+  }
+  function showWeather(w){
+    weatherText = (w.city ? w.city + " " : "") + (WEATHER_MAP[w.code] || "") +
+      " " + w.t + "°（" + w.min + "~" + w.max + "°）";
+    renderClock();
+  }
+  function loadWeather(){
+    var CK = "lunch-weather-v1";
+    try{
+      var cached = JSON.parse(localStorage.getItem(CK) || "null");
+      if(cached && (Date.now() - cached.ts) < 30*60000 && typeof cached.t === "number"){ showWeather(cached); return; }
+    }catch(e){}
+    getPosition().then(function(p){
+      return fetchJSON("https://wttr.in/" + p.lat.toFixed(2) + "," + p.lon.toFixed(2) + "?format=j1", 12000).then(function(j){
+        var c = j.current_condition[0], w = j.weather[0];
+        var area = (j.nearest_area && j.nearest_area[0]) ? j.nearest_area[0] : null;
+        return {
+          ts: Date.now(), t: Math.round(+c.temp_C), code: +c.weatherCode,
+          max: Math.round(+w.maxtempC), min: Math.round(+w.mintempC),
+          city: p.city || (area ? area.areaName[0].value : "")
+        };
+      });
+    }).then(function(w){
+      try{ localStorage.setItem("lunch-weather-v1", JSON.stringify(w)); }catch(e){}
+      showWeather(w);
+    }).catch(function(){});
+  }
+  function pad2(n){ return ("0" + n).slice(-2); }
+  function renderClock(){
+    var now = new Date();
+    var wd = "日一二三四五六"[now.getDay()];
+    var lunar = lunarText(now);
+    $("dateLine").textContent = now.getFullYear() + "年" + (now.getMonth()+1) + "月" + now.getDate() + "日 星期" + wd + (lunar ? " · 农历" + lunar : "");
+    var line = pad2(now.getHours()) + ":" + pad2(now.getMinutes());
+    if(weatherText) line += " · " + weatherText;
+    $("timeLine").textContent = line;
+  }
 
   function uniqVals(axis){
     var set = [], seen = {};
@@ -673,6 +796,9 @@
   renderHistory();
   fillBulbs();
   rebuildAll();
+  renderClock();
+  loadWeather();
+  setInterval(renderClock, 15000);
 })();
 </script>
 </body>
